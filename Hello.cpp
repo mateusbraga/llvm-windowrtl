@@ -17,6 +17,7 @@
 #include "llvm/Pass.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include "llvm/Analysis/MemoryDependenceAnalysis.h"
 #include "llvm/Transforms/Instrumentation.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallString.h"
@@ -43,7 +44,9 @@ using namespace llvm;
 
 #define DEBUG_TYPE "priNTAccesses"
 
-static cl::opt<unsigned> RaceLineNumber("RaceLN", cl::desc("Race associated line number"));
+static cl::opt<unsigned> RaceLineNumber("RaceLineNumber", cl::desc("Race associated line number"));
+static cl::opt<std::string> RaceFilename("RaceFilename", cl::desc("Race associated line number"));
+static cl::opt<bool> RaceIsRead("RaceIsRead", cl::desc("Race associated line number"));
 
 STATISTIC(HelloCounter, "Counts number of functions greeted");
 STATISTIC(NumInstrumentedReads, "Number of instrumented reads");
@@ -67,12 +70,16 @@ namespace {
         bool addrPointsToConstantData(Value *Addr);
         bool instrumentLoadOrStore(Instruction *I);
         const DataLayout *DL;
+        MemoryDependenceAnalysis* memdep;
+        AliasAnalysis* aliasAnalysis;
         Instruction* raceInstruction1;
 
         bool doInitialization(Module &M) override;
         bool runOnFunction(Function &F) override;
         // We don't modify the program, so we preserve all analyses.
         void getAnalysisUsage(AnalysisUsage &AU) const override {
+            AU.addRequired<MemoryDependenceAnalysis>();
+            AU.addRequired<AliasAnalysis>();
             AU.setPreservesAll();
         }
     };
@@ -108,6 +115,10 @@ bool PrintAccesses::doInitialization(Module &M) {
         report_fatal_error("data layout missing");
     }
     DL = &DLP->getDataLayout();
+    //memdep = &getAnalysis<MemoryDependenceAnalysis>();
+    //if (!memdep) {
+        //report_fatal_error("memdep missing");
+    //}
 
     //bool found = false;
     //for (Module::iterator f = M.begin(), fe = M.end(); f != fe; ++f) {
@@ -151,6 +162,9 @@ bool PrintAccesses::runOnFunction(Function &F) {
     bool HasCalls = false;
     //bool SanitizeFunction = F.hasFnAttribute(Attribute::SanitizeThread);
 
+    memdep = &getAnalysis<MemoryDependenceAnalysis>();
+    aliasAnalysis = &getAnalysis<AliasAnalysis>();
+
     bool found = false;
     // Traverse all instructions, collect loads/stores/returns, check for calls.
     for (auto &BB : F) {
@@ -166,20 +180,24 @@ bool PrintAccesses::runOnFunction(Function &F) {
                     MemIntrinCalls.push_back(&Inst);
                 HasCalls = true;
                 chooseInstructionsToInstrument(LocalLoadsAndStores, AllLoadsAndStores);
+            //MemDepResult result = memdep->getDependency(&Inst);
+            //errs() << "Call: " << Inst << "\n";
+            //errs() << *(result.getInst()) << "\n";
+            //errs() << "\n";
             }
             if (MDNode *N = Inst.getMetadata("dbg")) {
                 DILocation Loc(N);
                 unsigned currLN = Loc.getLineNumber();
                 if (currLN == RaceLineNumber) {
-                    if (found) {
-                        errs() << "Found two instructions in the same line number!" << "\n";
-                        errs() << "    1: " << *raceInstruction1 << "\n";
-                        errs() << "    2: " << Inst << "\n";
+                    if (!found) {
+                        errs() << "Found instructions with line number:" << RaceLineNumber << "\n";
                     }
 
+                    errs() << "    " << Inst << "\n";
                     found = true;
-                    raceInstruction1 = &Inst;
-                    errs() << "Got LLVM Instruction associated with line " << RaceLineNumber << ": '" << Inst << "' in " << F.getName() << "\n";
+                    if (RaceIsRead && isa<LoadInst>(&Inst)){
+                        raceInstruction1 = &Inst;
+                    }
                 }
             } 
         }
@@ -188,81 +206,72 @@ bool PrintAccesses::runOnFunction(Function &F) {
     if(!found){
         return false;
     }
+    errs() << "Got LLVM Instruction associated with line " << RaceLineNumber << ": '" << *raceInstruction1 << "' in " << F.getName() << "\n";
 
-    for (auto &BB : F) {
-        for (auto &Inst : BB) {
-            if (isAtomic(&Inst))
-                AtomicAccesses.push_back(&Inst);
-            else if (isa<LoadInst>(Inst) || isa<StoreInst>(Inst))
-                LocalLoadsAndStores.push_back(&Inst);
-            else if (isa<ReturnInst>(Inst))
-                RetVec.push_back(&Inst);
-            else if (isa<CallInst>(Inst) || isa<InvokeInst>(Inst)) {
-                if (isa<MemIntrinsic>(Inst))
-                    MemIntrinCalls.push_back(&Inst);
-                HasCalls = true;
-                chooseInstructionsToInstrument(LocalLoadsAndStores, AllLoadsAndStores);
-            }
-            if (MDNode *N = Inst.getMetadata("dbg")) {
-                DILocation Loc(N);
-                unsigned currLN = Loc.getLineNumber();
-                if (currLN == RaceLineNumber) {
-                    if (found) {
-                        errs() << "Found two instructions in the same line number!" << "\n";
-                        errs() << "    1: " << *raceInstruction1 << "\n";
-                        errs() << "    2: " << Inst << "\n";
-                    }
-
-                    found = true;
-                    raceInstruction1 = &Inst;
-                    errs() << "Got LLVM Instruction associated with line " << RaceLineNumber << ": '" << Inst << "' in " << F.getName() << "\n";
-                }
-            } 
-        }
-        chooseInstructionsToInstrument(LocalLoadsAndStores, AllLoadsAndStores);
+    MemDepResult result = memdep->getDependency(raceInstruction1);
+    if (LoadInst *raceLoad = dyn_cast<LoadInst>(raceInstruction1)) {
+        AliasAnalysis::Location loc = aliasAnalysis->getLocation(raceLoad);
+        result = memdep->getPointerDependencyFrom(loc, RaceIsRead, (*F.begin()).begin(), &*F.begin());
+    } else if (StoreInst *raceStore = dyn_cast<StoreInst>(raceInstruction1)) {
+        AliasAnalysis::Location loc = aliasAnalysis->getLocation(raceStore);
+        result = memdep->getPointerDependencyFrom(loc, RaceIsRead, (*F.begin()).begin(), &*F.begin());
     }
+    errs() << "Dependency to it:" << "\n";
+    //errs() << "    " << *(result.getInst())<< "\n";
+    errs() << "    " << (result.isDef())<< "\n";
+    errs() << "    " << (result.isClobber())<< "\n";
+    errs() << "    " << (result.isUnknown())<< "\n";
+    errs() << "    " << (result.isNonLocal())<< "\n";
+    errs() << "    " << (result.isNonFuncLocal())<< "\n";
+    Value *Addr, *val;
+    for (auto Inst : AllLoadsAndStores) {
+        if (LoadInst *LI = dyn_cast<LoadInst>(Inst)) {
+            Addr = LI->getPointerOperand();
+            val = LI;
 
+            MemDepResult result = memdep->getDependency(LI);
+            errs() << "LOAD: " << *LI << "\n";
+            errs() << *(result.getInst()) << "\n";
+            errs() << "\n";
 
-    //Value *Addr, *val;
-    //for (auto Inst : AllLoadsAndStores) {
-    ////Res |= instrumentLoadOrStore(Inst);
+            AliasAnalysis::AliasResult resultAlias;
+            if (LoadInst *raceLoad = dyn_cast<LoadInst>(raceInstruction1)) {
+                resultAlias = aliasAnalysis->alias(aliasAnalysis->getLocation(raceLoad), aliasAnalysis->getLocation(LI));
+            } else if (StoreInst *raceStore = dyn_cast<StoreInst>(raceInstruction1)) {
+                resultAlias = aliasAnalysis->alias(aliasAnalysis->getLocation(raceStore), aliasAnalysis->getLocation(LI));
+            }
+            errs() << "ALIAS:" << resultAlias << "\n";
+        } else if (StoreInst *SI = dyn_cast<StoreInst>(Inst)) {
+            Addr = SI->getPointerOperand();
+            val = SI->getValueOperand();
 
-    //bool isToGlobal = false;
-    //if (LoadInst *LI = dyn_cast<LoadInst>(Inst)) {
-    //Addr = LI->getPointerOperand();
-    //val = LI;
-    //if (GlobalVariable *GV = dyn_cast<GlobalVariable>(Addr)) {
-    //if(GV == gv) {
-    //isToGlobal = true;
-    //}
-    //}
+            MemDepResult result = memdep->getDependency(SI);
+            errs() << "STORE: " << *SI << "\n";
+            errs() << *(result.getInst()) << "\n";
+            errs() << "\n";
 
-    //} else if (StoreInst *SI = dyn_cast<StoreInst>(Inst)) {
-    //Addr = SI->getPointerOperand();
-    //val = SI->getValueOperand();
-    //if (GlobalVariable *GV = dyn_cast<GlobalVariable>(Addr)) {
-    //if(GV == gv) {
-    //isToGlobal = true;
-    //}
-    //}
-    //} else { 
-    //llvm_unreachable("unknown Instruction type");
-    //}
-    //if (isToGlobal) {
-    //errs() << "Hello: " << HelloCounter;
-    //errs() << "Hello: " << SourceCodeNumber;
-    ////errs().write_escaped(F.getName()) << '\n';
-    //errs() << *Inst << "\n";
-
-    //if (MDNode *N = Inst->getMetadata("dbg")) {
-    //DILocation Loc(N);
-    //unsigned Line = Loc.getLineNumber();
-    //errs() << "Line: " << Line << "\n";
-    //} 
-    //++HelloCounter;
-
-    //}
-    //}
+            AliasAnalysis::AliasResult resultAlias;
+            if (LoadInst *raceLoad = dyn_cast<LoadInst>(raceInstruction1)) {
+                resultAlias = aliasAnalysis->alias(aliasAnalysis->getLocation(raceLoad), aliasAnalysis->getLocation(SI));
+            } else if (StoreInst *raceStore = dyn_cast<StoreInst>(raceInstruction1)) {
+                resultAlias = aliasAnalysis->alias(aliasAnalysis->getLocation(raceStore), aliasAnalysis->getLocation(SI));
+            }
+            errs() << "ALIAS:" << resultAlias << "\n";
+        } else { 
+            llvm_unreachable("unknown Instruction type");
+        }
+        AliasAnalysis::ModRefResult resultAA;
+        if (LoadInst *raceLoad = dyn_cast<LoadInst>(raceInstruction1)) {
+            AliasAnalysis::Location loc = aliasAnalysis->getLocation(raceLoad);
+            resultAA = aliasAnalysis->getModRefInfo(Inst, loc);
+        } else if (StoreInst *raceStore = dyn_cast<StoreInst>(raceInstruction1)) {
+            AliasAnalysis::Location loc = aliasAnalysis->getLocation(raceStore);
+            resultAA = aliasAnalysis->getModRefInfo(Inst, loc);
+        }
+        errs() << "\n";
+        errs() << *Inst << "\n";
+        errs() << resultAA << "\n";
+    }
 
     return false;
 }
@@ -342,21 +351,21 @@ void PrintAccesses::chooseInstructionsToInstrument(
     for (SmallVectorImpl<Instruction*>::reverse_iterator It = Local.rbegin(),
             E = Local.rend(); It != E; ++It) {
         Instruction *I = *It;
-        if (StoreInst *Store = dyn_cast<StoreInst>(I)) {
-            WriteTargets.insert(Store->getPointerOperand());
-        } else {
-            LoadInst *Load = cast<LoadInst>(I);
-            Value *Addr = Load->getPointerOperand();
-            if (WriteTargets.count(Addr)) {
-                // We will write to this temp, so no reason to analyze the read.
-                NumOmittedReadsBeforeWrite++;
-                continue;
-            }
-            if (addrPointsToConstantData(Addr)) {
-                // Addr points to some constant data -- it can not race with any writes.
-                continue;
-            }
-        }
+        //if (StoreInst *Store = dyn_cast<StoreInst>(I)) {
+        //WriteTargets.insert(Store->getPointerOperand());
+        //} else {
+        //LoadInst *Load = cast<LoadInst>(I);
+        //Value *Addr = Load->getPointerOperand();
+        //if (WriteTargets.count(Addr)) {
+        //// We will write to this temp, so no reason to analyze the read.
+        //NumOmittedReadsBeforeWrite++;
+        //continue;
+        //}
+        //if (addrPointsToConstantData(Addr)) {
+        //// Addr points to some constant data -- it can not race with any writes.
+        //continue;
+        //}
+        //}
         All.push_back(I);
     }
     Local.clear();
