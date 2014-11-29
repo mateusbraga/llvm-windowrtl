@@ -1,33 +1,33 @@
 #include <stdio.h>
 #include <sanitizer/dfsan_interface.h>
 
-dfsan_label globalInputLabel;
-
-void dfrtl_check(int value) {
-    printf("WindowRtl: Checking if value %d is tainted: ", value);
-    dfsan_label value_label = dfsan_get_label(value);
-    if(dfsan_has_label(value_label, globalInputLabel)) {
+void dfrtl_check(dfsan_label* globalInputLabel, const void* addr, size_t size) {
+    printf("WindowRtl: Is addr %p size %zu tainted? ", addr, size);
+    dfsan_label value_label = dfsan_read_label(addr, size);
+    if(dfsan_has_label(value_label, *globalInputLabel)) {
         printf("yes\n");
     } else {
         printf("no\n");
     }
 }
 
-void dfrtl_add_input_label(void* input_to_taint, unsigned long size) {
-    if (globalInputLabel == 0) {
-        printf("WindowRtl: Created global input label\n");
-        globalInputLabel = dfsan_create_label("input", 0);
-    }
-    dfsan_set_label(globalInputLabel, input_to_taint, size);
-    printf("WindowRtl: Tainted %p size %zd\n", input_to_taint, size);
-    int* conv = (int*) input_to_taint;
-    /*printf("Value of input %d\n", *conv);*/
-    /*dfsan_label value_label = dfsan_get_label(*conv);*/
-    /*if(dfsan_has_label(value_label, globalInputLabel)) {*/
-        /*printf("in dfrtl_add_input_label %d is tainted by input\n", *conv);*/
+/*void dfrtl_add_input_label(void* addr, size_t size) {*/
+    /*if (globalInputLabel == 0) {*/
+        /*printf("WindowRtl: Created global input label\n");*/
+        /*globalInputLabel = dfsan_create_label("input", 0);*/
     /*}*/
-    // this call seems to make everything work.
+    /*dfsan_set_label(globalInputLabel, addr, size);*/
+    /*printf("WindowRtl: Tainted %p size %zd\n", addr, size);*/
+
+    /*[>int* conv = (int*) addr;<]*/
+    /*[>printf("Value of input %d\n", *conv);<]*/
+    /*[>dfsan_label value_label = dfsan_get_label(*conv);<]*/
+    /*[>if(dfsan_has_label(value_label, globalInputLabel)) {<]*/
+        /*[>printf("in dfrtl_add_input_label %d is tainted by input\n", *conv);<]*/
+    /*[>}<]*/
+    /*// this call seems to make everything work.*/
     
-    printf("WindowRtl: Bootstrap call: ");
-    dfrtl_check(*conv);
-}
+    /*printf("WindowRtl: Bootstrap call: ");*/
+    /*dfrtl_check(addr, size);*/
+    /*printf("globalInputLabel: %d\n", globalInputLabel);*/
+/*}*/
