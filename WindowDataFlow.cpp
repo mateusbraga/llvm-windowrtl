@@ -2,7 +2,9 @@
 #include "llvm/IR/Function.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/raw_ostream.h"
+#include <sstream>
 
+#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/MemoryDependenceAnalysis.h"
 #include "llvm/Transforms/Instrumentation.h"
 #include "llvm/ADT/SmallSet.h"
@@ -30,10 +32,8 @@ using namespace llvm;
 
 #define DEBUG_TYPE "WindowDataFlow"
 
-static cl::opt<unsigned> WindowBeginLine("WindowBeginLine", cl::desc("Line Begin of vulnerability window"));
-static cl::opt<unsigned> WindowEndLine("WindowEndLine", cl::desc("Line End of vulnerability window"));
-static cl::opt<std::string> WindowBeginFile("WindowBeginFile", cl::desc("TODO"));
-static cl::opt<std::string> WindowEndFile("WindowEndFile", cl::desc("TODO"));
+static cl::opt<std::string> WindowBeginLocation("WindowBeginLocation", cl::desc("Begin of vulnerability window"));
+static cl::opt<std::string> WindowEndLocation("WindowEndLocation", cl::desc("End of vulnerability window"));
 
 STATISTIC(LoopCounter, "Number of times in the loop 'basic block in window'");
 STATISTIC(InstructionWindowCounter, "Number of instructions in the window");
@@ -57,9 +57,9 @@ namespace {
         bool doInitialization(Module &M) override;
         bool runOnModule(Module &M) override;
 
-        // Nothing useful for AnalysisUsage for now (mateus)
-        //void getAnalysisUsage(AnalysisUsage &AU) const override {
-        //}
+        void getAnalysisUsage(AnalysisUsage &AU) const override {
+            AU.addRequired<LoopInfo>();
+        }
     };
 }
 
@@ -82,37 +82,47 @@ bool WindowDataFlow::doInitialization(Module &M) {
 bool WindowDataFlow::runOnModule(Module &M) {
     if (!DL) return false;
 
-    // Find begin and end inst
+    // Get instructions that mark the beginning and end of the window
     for (Module::iterator f = M.begin(), fe = M.end(); f != fe; ++f) {
         for (Function::iterator b = (&*f)->begin(), be = f->end(); b != be; ++b) {
             for (BasicBlock::iterator i = b->begin(), ie = b->end(); i != ie; ++i) {
                 Instruction* Inst = (&*i);
                 if (MDNode *N = Inst->getMetadata("dbg")) {
                     DILocation Loc(N);
-                    unsigned currLN = Loc.getLineNumber();
-                    if (currLN == WindowBeginLine) {
+                    SmallString<128> location;
+                    location += Loc.getDirectory(); 
+                    location += "/" + std::string(Loc.getFilename());
+                    location += ":" + itostr(Loc.getLineNumber());
+                    location += ":" + itostr(Loc.getColumnNumber());
+
+                    //errs() << location << "\n";
+                    if (location.compare(WindowBeginLocation) == 0) {
                         beginWindowInst = Inst;
-                    } else if (currLN == WindowEndLine) {
+                    } else if (location.compare(WindowEndLocation) == 0) {
                         endWindowInst = Inst;
                     }
                 } 
             }
         }
+        //LoopInfo& LI = getAnalysis<LoopInfo>();
     }
     if (!beginWindowInst) {
-        errs() << "Failed to find LLVM Instruction associated with line " << WindowBeginLine << ". Check if the LLVM assembly was compiled with debug information (command-line option:'-g')" << "\n";
+        errs() << "Failed to find instruction of location " << WindowBeginLocation << ". Check if the LLVM assembly was compiled with debug information (command-line option:'-g')" << "\n";
         exit(1);
     }
     if (!endWindowInst) {
-        errs() << "Failed to find LLVM Instruction associated with line " << WindowBeginLine << ". Check if the LLVM assembly was compiled with debug information (command-line option:'-g')" << "\n";
+        errs() << "Failed to find instruction of location " << WindowEndLocation << ". Check if the LLVM assembly was compiled with debug information (command-line option:'-g')" << "\n";
         exit(1);
     }
+    errs() << "BeginWindowInst \n\t(location " << WindowBeginLocation << "): \n\t" << *beginWindowInst << "\n";
+    errs() << "EndWindowInst \n\t(location " << WindowEndLocation << "): \n\t" << *endWindowInst << "\n";
 
-    errs() << "Got LLVM Instruction associated with begin line " << WindowBeginLine << ": '" << *beginWindowInst << "\n";
-    errs() << "Got LLVM Instruction associated with end line " << WindowEndLine << ": '" << *endWindowInst << "\n";
-
+    // Check for globalInputLabel
     GlobalVariable* globalInputLabelVar = M.getGlobalVariable("globalInputLabel");
-
+    if (globalInputLabelVar == NULL) {
+        errs() << "Could not find globalInputLabel global variable in module.\n";
+        exit(1);
+    }
 
     // Phase 2: Search all possible paths between begin and end
     std::vector<Instruction*> discover;
@@ -126,16 +136,15 @@ bool WindowDataFlow::runOnModule(Module &M) {
         if (discover.size() == 0) {
             break;
         }
-        LoopCounter++;
 
         Instruction* inst = discover.back();
         discover.pop_back();
-
         if(visited.count(inst)) {
             continue;
         }
-
         visited.insert(inst);
+
+        LoopCounter++;
 
         BasicBlock *BB = inst->getParent();
         BasicBlock::iterator it(inst);
@@ -165,22 +174,18 @@ bool WindowDataFlow::runOnModule(Module &M) {
         for (succ_iterator PI = succ_begin(BB), E = succ_end(BB); PI != E; ++PI) {
             BasicBlock *succ = *PI;
             Instruction* firstInstruction = &*(succ->begin());
-            if(visited.count(firstInstruction)) {
-                continue;
-            }
-
             discover.push_back(firstInstruction);
         }
     }
 
     //for (auto inst : brInsts) {
-    //if (inst->isUnconditional()) {
-    //continue;
-    //}
-    //errs() << "Branches:" << *inst << "\n";
-    //IRBuilder<> Builder(inst);
-    //Value* vI32 = Builder.CreateZExt(inst->getCondition(), Builder.getInt32Ty());
-    //Builder.CreateCall(checkRuntimeFunction, vI32);
+        //if (inst->isUnconditional()) {
+            //continue;
+        //}
+        //errs() << "Branches:" << *inst << "\n";
+        //IRBuilder<> Builder(inst);
+        //Value* vI32 = Builder.CreateZExt(inst->getCondition(), Builder.getInt32Ty());
+        //Builder.CreateCall3(checkRuntimeFunction, globalInputLabelVar, loadAddrI8Ptr, elementSize);
     //}
 
     for (auto inst : loadInsts) {

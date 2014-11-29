@@ -1,4 +1,4 @@
-##===- lib/Transforms/Hello/Makefile -----------------------*- Makefile -*-===##
+##===- lib/Transforms/WindowDataFlow/Makefile -----------------------*- Makefile -*-===##
 #
 #                     The LLVM Compiler Infrastructure
 #
@@ -8,7 +8,7 @@
 ##===----------------------------------------------------------------------===##
 
 LEVEL = ../../..
-LIBRARYNAME = LLVMHello
+LIBRARYNAME = WindowDataFlow
 LOADABLE_MODULE = 1
 USEDLIBS =
 
@@ -16,7 +16,7 @@ USEDLIBS =
 # from the hello plugin.
 ifneq ($(REQUIRES_RTTI), 1)
 ifneq ($(REQUIRES_EH), 1)
-EXPORTED_SYMBOL_FILE = $(PROJ_SRC_DIR)/Hello.exports
+EXPORTED_SYMBOL_FILE = $(PROJ_SRC_DIR)/WindowDataFlow.exports
 endif
 endif
 
