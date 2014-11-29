@@ -104,7 +104,17 @@ bool WindowDataFlow::runOnModule(Module &M) {
                 } 
             }
         }
-        //LoopInfo& LI = getAnalysis<LoopInfo>();
+        //if (!(&*f)->isDeclaration()) {
+            //errs() << "Hi:" << (&*f)->getName() << "\n"; 
+            //LoopInfo& LI = getAnalysis<LoopInfo>(*f);
+            //for (LoopInfo::iterator li = LI.begin(), le = LI.end(); li != le; ++li) {
+                //errs() << "Hi2\n"; 
+                //errs() << (*li) << "\n"; 
+                //errs() << (&*li) << "\n"; 
+            //}
+            //errs() << &LI << "\n"; 
+            //LI.print(errs());
+        //}
     }
     if (!beginWindowInst) {
         errs() << "Failed to find instruction of location " << WindowBeginLocation << ". Check if the LLVM assembly was compiled with debug information (command-line option:'-g')" << "\n";
@@ -149,6 +159,14 @@ bool WindowDataFlow::runOnModule(Module &M) {
         BasicBlock *BB = inst->getParent();
         BasicBlock::iterator it(inst);
 
+        //LoopInfo& LI = getAnalysis<LoopInfo>(*BB->getParent());
+        //Loop* loop = LI.getLoopFor(BB);
+        //errs() << "Got loop:" << loop << "\n";
+        //errs() << "Got loop:" << loop->getUniqueExitBlock() << "\n";
+        
+
+
+
         bool foundEndInst = false;
         for(BasicBlock::iterator be = inst->getParent()->end(); it != be; ++it) {
             InstructionWindowCounter++;
@@ -179,13 +197,13 @@ bool WindowDataFlow::runOnModule(Module &M) {
     }
 
     //for (auto inst : brInsts) {
-        //if (inst->isUnconditional()) {
-            //continue;
-        //}
-        //errs() << "Branches:" << *inst << "\n";
-        //IRBuilder<> Builder(inst);
-        //Value* vI32 = Builder.CreateZExt(inst->getCondition(), Builder.getInt32Ty());
-        //Builder.CreateCall3(checkRuntimeFunction, globalInputLabelVar, loadAddrI8Ptr, elementSize);
+    //if (inst->isUnconditional()) {
+    //continue;
+    //}
+    //errs() << "Branches:" << *inst << "\n";
+    //IRBuilder<> Builder(inst);
+    //Value* vI32 = Builder.CreateZExt(inst->getCondition(), Builder.getInt32Ty());
+    //Builder.CreateCall3(checkRuntimeFunction, globalInputLabelVar, loadAddrI8Ptr, elementSize);
     //}
 
     for (auto inst : loadInsts) {
@@ -210,25 +228,25 @@ bool WindowDataFlow::runOnModule(Module &M) {
         Builder.CreateCall3(checkRuntimeFunction, globalInputLabelVar, loadAddrI8Ptr, elementSize);
     }
 
-    for (auto inst : storeInsts) {
-        errs() << "Store:" << *inst << "\n";
-        BasicBlock::iterator bb(inst);
-        ++bb;
+    //for (auto inst : storeInsts) {
+        //errs() << "Store:" << *inst << "\n";
+        //BasicBlock::iterator bb(inst);
+        //++bb;
 
-        IRBuilder<> Builder(&*bb);
-        Value* storeAddr = inst->getPointerOperand();
-        Type* storeAddrType = storeAddr->getType();
-        unsigned storeAddrTypeSize = DL->getTypeStoreSize(storeAddrType->getPointerElementType());
-        if(storeAddrTypeSize == 2) {
-            continue;
-        }
+        //IRBuilder<> Builder(&*bb);
+        //Value* storeAddr = inst->getPointerOperand();
+        //Type* storeAddrType = storeAddr->getType();
+        //unsigned storeAddrTypeSize = DL->getTypeStoreSize(storeAddrType->getPointerElementType());
+        //if(storeAddrTypeSize == 2) {
+            //continue;
+        //}
 
 
-        ConstantInt* elementSize = ConstantInt::get(Builder.getInt64Ty(), storeAddrTypeSize);
-        errs() << "Inst:" << *inst << " addr:" << *storeAddr << " type:" << *storeAddrType << " size:" << *elementSize << "\n";
-        Value* storeAddrI8Ptr = Builder.CreateBitCast(storeAddr, Builder.getInt8PtrTy());
-        Builder.CreateCall3(checkRuntimeFunction, globalInputLabelVar, storeAddrI8Ptr, elementSize);
-    }
+        //ConstantInt* elementSize = ConstantInt::get(Builder.getInt64Ty(), storeAddrTypeSize);
+        //errs() << "Inst:" << *inst << " addr:" << *storeAddr << " type:" << *storeAddrType << " size:" << *elementSize << "\n";
+        //Value* storeAddrI8Ptr = Builder.CreateBitCast(storeAddr, Builder.getInt8PtrTy());
+        //Builder.CreateCall3(checkRuntimeFunction, globalInputLabelVar, storeAddrI8Ptr, elementSize);
+    //}
     //IRBuilder<> Builder(endWindowInst);
     //Value* vI32 = Builder.CreateZExt(inst->getCondition(), Builder.getInt32Ty());
     //Builder.CreateCall(checkRuntimeFunction, vI32);
