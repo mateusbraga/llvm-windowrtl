@@ -35,7 +35,7 @@ using namespace llvm;
 static cl::opt<std::string> WindowBeginLocation("WindowBeginLocation", cl::desc("Begin of vulnerability window"));
 static cl::opt<std::string> WindowEndLocation("WindowEndLocation", cl::desc("End of vulnerability window"));
 
-STATISTIC(LoopCounter, "Number of times in the loop 'basic block in window'");
+STATISTIC(LoopCounter, "Number of basic blocks in the window");
 STATISTIC(InstructionWindowCounter, "Number of instructions in the window");
 
 namespace {
@@ -74,8 +74,8 @@ bool WindowDataFlow::doInitialization(Module &M) {
     DL = &DLP->getDataLayout();
 
     IRBuilder<> IRB(M.getContext());
-    checkRuntimeFunction = M.getOrInsertFunction("dfs$dfrtl_check", IRB.getVoidTy(), Type::getInt16PtrTy(M.getContext()), IRB.getInt8PtrTy(), IRB.getInt64Ty(), nullptr);
-    taintInputFunction = M.getOrInsertFunction("dfs$dfrtl_add_input_label", IRB.getVoidTy(), IRB.getInt8PtrTy(), IRB.getInt64Ty(), nullptr);
+    checkRuntimeFunction = M.getOrInsertFunction("dfrtl_check", IRB.getVoidTy(), Type::getInt16PtrTy(M.getContext()), IRB.getInt8PtrTy(), IRB.getInt64Ty(), nullptr);
+    taintInputFunction = M.getOrInsertFunction("dfrtl_add_input_label", IRB.getVoidTy(), IRB.getInt8PtrTy(), IRB.getInt64Ty(), nullptr);
     return false;
 }
 
