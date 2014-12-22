@@ -35,7 +35,7 @@ using namespace llvm;
 static cl::opt<std::string> WindowBeginLocation("WindowBeginLocation", cl::desc("Begin of vulnerability window"));
 static cl::opt<std::string> WindowEndLocation("WindowEndLocation", cl::desc("End of vulnerability window"));
 
-STATISTIC(LoopCounter, "Number of basic blocks in the window");
+STATISTIC(BasicBlockCounter, "Number of basic blocks in the window");
 STATISTIC(InstructionWindowCounter, "Number of instructions in the window");
 
 namespace {
@@ -51,7 +51,8 @@ namespace {
         Value* checkRuntimeFunction;
         Value* taintInputFunction;
 
-        void prependWithDataFlowCheck(Instruction* inst, Value* v);
+        void checkUses(User* user);
+        void checkLoadInstruction(LoadInst* li);
         void taintArgvAsInput(Module &M);
 
         bool doInitialization(Module &M) override;
@@ -74,7 +75,7 @@ bool WindowDataFlow::doInitialization(Module &M) {
     DL = &DLP->getDataLayout();
 
     IRBuilder<> IRB(M.getContext());
-    checkRuntimeFunction = M.getOrInsertFunction("dfrtl_check", IRB.getVoidTy(), Type::getInt16PtrTy(M.getContext()), IRB.getInt8PtrTy(), IRB.getInt64Ty(), nullptr);
+    checkRuntimeFunction = M.getOrInsertFunction("dfrtl_check", IRB.getVoidTy(), IRB.getInt8PtrTy(), IRB.getInt64Ty(), nullptr);
     taintInputFunction = M.getOrInsertFunction("dfrtl_add_input_label", IRB.getVoidTy(), IRB.getInt8PtrTy(), IRB.getInt64Ty(), nullptr);
     return false;
 }
@@ -104,17 +105,6 @@ bool WindowDataFlow::runOnModule(Module &M) {
                 } 
             }
         }
-        //if (!(&*f)->isDeclaration()) {
-            //errs() << "Hi:" << (&*f)->getName() << "\n"; 
-            //LoopInfo& LI = getAnalysis<LoopInfo>(*f);
-            //for (LoopInfo::iterator li = LI.begin(), le = LI.end(); li != le; ++li) {
-                //errs() << "Hi2\n"; 
-                //errs() << (*li) << "\n"; 
-                //errs() << (&*li) << "\n"; 
-            //}
-            //errs() << &LI << "\n"; 
-            //LI.print(errs());
-        //}
     }
     if (!beginWindowInst) {
         errs() << "Failed to find instruction of location " << WindowBeginLocation << ". Check if the LLVM assembly was compiled with debug information (command-line option:'-g')" << "\n";
@@ -124,15 +114,8 @@ bool WindowDataFlow::runOnModule(Module &M) {
         errs() << "Failed to find instruction of location " << WindowEndLocation << ". Check if the LLVM assembly was compiled with debug information (command-line option:'-g')" << "\n";
         exit(1);
     }
-    errs() << "BeginWindowInst \n\t(location " << WindowBeginLocation << "): \n\t" << *beginWindowInst << "\n";
-    errs() << "EndWindowInst \n\t(location " << WindowEndLocation << "): \n\t" << *endWindowInst << "\n";
-
-    // Check for globalInputLabel
-    GlobalVariable* globalInputLabelVar = M.getGlobalVariable("globalInputLabel");
-    if (globalInputLabelVar == NULL) {
-        errs() << "Could not find globalInputLabel global variable in module.\n";
-        exit(1);
-    }
+    errs() << "BeginWindowInst \n\t(location: '" << WindowBeginLocation << "'): \n\t" << *beginWindowInst << "\n";
+    errs() << "EndWindowInst \n\t(location: '" << WindowEndLocation << "'): \n\t" << *endWindowInst << "\n";
 
     // Phase 2: Search all possible paths between begin and end
     std::vector<Instruction*> discover;
@@ -154,32 +137,36 @@ bool WindowDataFlow::runOnModule(Module &M) {
         }
         visited.insert(inst);
 
-        LoopCounter++;
+        BasicBlockCounter++;
 
         BasicBlock *BB = inst->getParent();
         BasicBlock::iterator it(inst);
 
-        //LoopInfo& LI = getAnalysis<LoopInfo>(*BB->getParent());
-        //Loop* loop = LI.getLoopFor(BB);
-        //errs() << "Got loop:" << loop << "\n";
-        //errs() << "Got loop:" << loop->getUniqueExitBlock() << "\n";
-        
+        LoopInfo& LI = getAnalysis<LoopInfo>(*BB->getParent());
+        //for (LoopInfo::iterator it = LI.begin(), ie = LI.end(); it != ie; ++it) {
+            ////errs() << "Got it:" << it << "\n";
+            //errs() << "Got *it:" << *it << "\n";
+        //}
 
-
+        bool isLoopHeader = LI.isLoopHeader(BB);
 
         bool foundEndInst = false;
         for(BasicBlock::iterator be = inst->getParent()->end(); it != be; ++it) {
             InstructionWindowCounter++;
             //errs() << *it << "\n";
-            if (BranchInst* brInst = dyn_cast<BranchInst>(it)) {
-                brInsts.push_back(brInst);
+            
+            if (isLoopHeader) {
+                if (BranchInst* brInst = dyn_cast<BranchInst>(it)) {
+                    brInsts.push_back(brInst);
+                }
             }
-            if (LoadInst* loadInst = dyn_cast<LoadInst>(it)) {
-                loadInsts.push_back(loadInst);
-            }
-            if (StoreInst* storeInst = dyn_cast<StoreInst>(it)) {
-                storeInsts.push_back(storeInst);
-            }
+
+            //if (LoadInst* loadInst = dyn_cast<LoadInst>(it)) {
+                //loadInsts.push_back(loadInst);
+            //}
+            //if (StoreInst* storeInst = dyn_cast<StoreInst>(it)) {
+                //storeInsts.push_back(storeInst);
+            //}
             if (&*it == endWindowInst) {
                 foundEndInst = true;
                 break;
@@ -196,100 +183,83 @@ bool WindowDataFlow::runOnModule(Module &M) {
         }
     }
 
-    //for (auto inst : brInsts) {
-    //if (inst->isUnconditional()) {
-    //continue;
-    //}
-    //errs() << "Branches:" << *inst << "\n";
-    //IRBuilder<> Builder(inst);
-    //Value* vI32 = Builder.CreateZExt(inst->getCondition(), Builder.getInt32Ty());
-    //Builder.CreateCall3(checkRuntimeFunction, globalInputLabelVar, loadAddrI8Ptr, elementSize);
-    //}
+    // Phase 3: Instrument!
+    taintArgvAsInput(M);
 
-    for (auto inst : loadInsts) {
-        errs() << "Load:" << *inst << "\n";
-        BasicBlock::iterator bb(inst);
-        ++bb;
-
-        IRBuilder<> Builder(&*bb);
-        //Value* vI32 = Builder.CreatePtrToInt(inst, Builder.getInt32Ty());
-        //Value* vI32 = Builder.CreateZExt(inst, Builder.getInt32Ty());
-        Value* loadAddr = inst->getPointerOperand();
-        Type* loadAddrType = loadAddr->getType();
-        unsigned loadAddrTypeSize = DL->getTypeStoreSize(loadAddrType->getPointerElementType());
-
-        if(loadAddrTypeSize == 2) {
+    for (BranchInst* inst : brInsts) {
+        if (inst->isUnconditional()) {
             continue;
         }
+        errs() << "Branches:" << *inst << "\n";
 
-        ConstantInt* elementSize = ConstantInt::get(Builder.getInt64Ty(), loadAddrTypeSize);
-        errs() << "Inst:" << *inst << " addr:" << *loadAddr << " type:" << *loadAddrType << " size:" << *elementSize << "\n";
-        Value* loadAddrI8Ptr = Builder.CreateBitCast(loadAddr, Builder.getInt8PtrTy());
-        Builder.CreateCall3(checkRuntimeFunction, globalInputLabelVar, loadAddrI8Ptr, elementSize);
+        checkUses(inst);
     }
-
-    //for (auto inst : storeInsts) {
-        //errs() << "Store:" << *inst << "\n";
-        //BasicBlock::iterator bb(inst);
-        //++bb;
-
-        //IRBuilder<> Builder(&*bb);
-        //Value* storeAddr = inst->getPointerOperand();
-        //Type* storeAddrType = storeAddr->getType();
-        //unsigned storeAddrTypeSize = DL->getTypeStoreSize(storeAddrType->getPointerElementType());
-        //if(storeAddrTypeSize == 2) {
-            //continue;
-        //}
-
-
-        //ConstantInt* elementSize = ConstantInt::get(Builder.getInt64Ty(), storeAddrTypeSize);
-        //errs() << "Inst:" << *inst << " addr:" << *storeAddr << " type:" << *storeAddrType << " size:" << *elementSize << "\n";
-        //Value* storeAddrI8Ptr = Builder.CreateBitCast(storeAddr, Builder.getInt8PtrTy());
-        //Builder.CreateCall3(checkRuntimeFunction, globalInputLabelVar, storeAddrI8Ptr, elementSize);
-    //}
-    //IRBuilder<> Builder(endWindowInst);
-    //Value* vI32 = Builder.CreateZExt(inst->getCondition(), Builder.getInt32Ty());
-    //Builder.CreateCall(checkRuntimeFunction, vI32);
-    //errs() << "Will check if " << *endWindowInst->getOperand(1) << " is tainted.\n\n";
-    //prependWithDataFlowCheck(endWindowInst, endWindowInst->getOperand(1));
-
-
-    //taintArgvAsInput(M);
-
 
     return true;
 }
 
-void WindowDataFlow::prependWithDataFlowCheck(Instruction* inst, Value* v) {
+void WindowDataFlow::checkUses(User* user) {
+    for (Use &U : user->operands()) {
+        Value *v = U.get();
+
+        if (LoadInst* li = dyn_cast<LoadInst>(v)) {
+            checkLoadInstruction(li);
+            continue;
+        }
+
+        if (User* u = dyn_cast<User>(v)) {
+            checkUses(u);
+        }
+    }
 }
 
-//void WindowDataFlow::taintArgvAsInput(Module &M) {
-//// Taint argv
-//errs() << "Tainting argv in main\n"; 
-//Function* mainFunc = M.getFunction("main"); 
-//Function::arg_iterator args = mainFunc->getArgumentList().begin();
-//Value* argc = &*args;
-//++args;
-//Value* argv = &*args;
-////errs() << "argc" << *argc << "argv" << *argv << "\n";
+void WindowDataFlow::checkLoadInstruction(LoadInst* li) {
+    BasicBlock::iterator bb(li);
+    ++bb;
+    // Add check after load
+    IRBuilder<> Builder(&*bb);
 
-//User *U = *(argv->users().begin());
-//// the first use of an argument seems to be the one that give us the associated alloca address
-//Instruction *argvStoreInst = dyn_cast<Instruction>(U);
-//Value* argvAddr = argvStoreInst->getOperand(1);
-////errs() << "argvAddr" << *argvAddr << "\n";
+    Value* loadAddr = li->getPointerOperand();
+    Type* loadAddrType = loadAddr->getType();
+    unsigned loadAddrTypeSize = DL->getTypeStoreSize(loadAddrType->getPointerElementType());
 
-//BasicBlock::iterator it(argvStoreInst);
-//++it;
+    if(loadAddrTypeSize == 2) {
+        // FIXME this is just to ignore labels, can be improved
+        return;
+    }
 
-//IRBuilder<> Builder(&*it);
+    ConstantInt* elementSize = ConstantInt::get(Builder.getInt64Ty(), loadAddrTypeSize);
+    errs() << "Load:" << *li << " addr:" << *loadAddr << " type:" << *loadAddrType << " size:" << *elementSize << "\n";
+    Value* loadAddrI8Ptr = Builder.CreateBitCast(loadAddr, Builder.getInt8PtrTy());
+    Builder.CreateCall2(checkRuntimeFunction, loadAddrI8Ptr, elementSize);
+}
 
-//unsigned sizeOfAPointer = DL->getTypeStoreSize(argv->getType());
-//Value* argcI64 = Builder.CreateSExtOrBitCast(argc, Builder.getInt64Ty());
-//ConstantInt* sizeOfAPointerVal = ConstantInt::get(Builder.getInt64Ty(), sizeOfAPointer);
-//Value* argvAddrI8Ptr = Builder.CreateBitCast(argvAddr, Builder.getInt8PtrTy());
-//Value* argvSize = Builder.CreateMul(argcI64, sizeOfAPointerVal, "sizeOfArgv");
-//Builder.CreateCall2(taintInputFunction, argvAddrI8Ptr, argvSize);
-//Builder.CreateCall2(checkRuntimeFunction, argvAddrI8Ptr, argvSize);
-//return;
-//}
+void WindowDataFlow::taintArgvAsInput(Module &M) {
+    // Taint argv
+    errs() << "Tainting argv in main\n"; 
+    Function* mainFunc = M.getFunction("main"); 
+    Function::arg_iterator args = mainFunc->getArgumentList().begin();
+    Value* argc = &*args;
+    ++args;
+    Value* argv = &*args;
+    //errs() << "argc" << *argc << "argv" << *argv << "\n";
+
+    User *U = *(argv->users().begin());
+    // the first use of an argument seems to be the one that give us the associated alloca address
+    Instruction *argvStoreInst = dyn_cast<Instruction>(U);
+    Value* argvAddr = argvStoreInst->getOperand(1);
+    //errs() << "argvAddr" << *argvAddr << "\n";
+
+    BasicBlock::iterator it(argvStoreInst);
+    ++it;
+
+    IRBuilder<> Builder(&*it);
+
+    unsigned sizeOfAPointer = DL->getTypeStoreSize(argv->getType());
+    Value* argcI64 = Builder.CreateSExtOrBitCast(argc, Builder.getInt64Ty());
+    ConstantInt* sizeOfAPointerVal = ConstantInt::get(Builder.getInt64Ty(), sizeOfAPointer);
+    Value* argvAddrI8Ptr = Builder.CreateBitCast(argvAddr, Builder.getInt8PtrTy());
+    Value* argvSize = Builder.CreateMul(argcI64, sizeOfAPointerVal, "sizeOfArgv");
+    Builder.CreateCall2(taintInputFunction, argvAddrI8Ptr, argvSize);
+    return;
+}
